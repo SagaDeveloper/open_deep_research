@@ -57,6 +57,10 @@ configurable_model = init_chat_model(
     configurable_fields=("model", "max_tokens", "api_key"),
 )
 
+def _is_anthropic_model(model_name: str) -> bool:
+    """Check whether the given model identifier refers to an Anthropic model."""
+    return str(model_name).lower().startswith("anthropic:")
+
 async def clarify_with_user(state: AgentState, config: RunnableConfig) -> Command[Literal["write_research_brief", "__end__"]]:
     """Analyze user messages and ask clarifying questions if the research scope is unclear.
     
@@ -159,6 +163,16 @@ async def write_research_brief(state: AgentState, config: RunnableConfig) -> Com
         max_concurrent_research_units=configurable.max_concurrent_research_units,
         max_researcher_iterations=configurable.max_researcher_iterations
     )
+    if _is_anthropic_model(configurable.research_model):
+        supervisor_system_prompt_content = [
+            {
+                "type": "text",
+                "text": supervisor_system_prompt,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ]
+    else:
+        supervisor_system_prompt_content = supervisor_system_prompt
     
     return Command(
         goto="research_supervisor", 
@@ -167,7 +181,7 @@ async def write_research_brief(state: AgentState, config: RunnableConfig) -> Com
             "supervisor_messages": {
                 "type": "override",
                 "value": [
-                    SystemMessage(content=supervisor_system_prompt),
+                    SystemMessage(content=supervisor_system_prompt_content),
                     HumanMessage(content=response.research_brief)
                 ]
             }
@@ -401,6 +415,16 @@ async def researcher(state: ResearcherState, config: RunnableConfig) -> Command[
         mcp_prompt=configurable.mcp_prompt or "", 
         date=get_today_str()
     )
+    if _is_anthropic_model(configurable.research_model):
+        researcher_prompt_content = [
+            {
+                "type": "text",
+                "text": researcher_prompt,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ]
+    else:
+        researcher_prompt_content = researcher_prompt
     
     # Configure model with tools, retry logic, and settings
     research_model = (
@@ -411,7 +435,7 @@ async def researcher(state: ResearcherState, config: RunnableConfig) -> Command[
     )
     
     # Step 3: Generate researcher response with system context
-    messages = [SystemMessage(content=researcher_prompt)] + researcher_messages
+    messages = [SystemMessage(content=researcher_prompt_content)] + researcher_messages
     response = await research_model.ainvoke(messages)
     
     # Step 4: Update state and proceed to tool execution
