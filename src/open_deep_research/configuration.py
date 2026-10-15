@@ -74,6 +74,30 @@ class Configuration(BaseModel):
             }
         }
     )
+    research_retry_max_attempts: int = Field(
+        default=2,
+        metadata={
+            "x_oap_ui_config": {
+                "type": "number",
+                "default": 2,
+                "min": 1,
+                "max": 5,
+                "description": "Max attempts for a single sub-researcher before giving up on that research topic"
+            }
+        }
+    )
+    research_retry_base_delay_seconds: float = Field(
+        default=2.0,
+        metadata={
+            "x_oap_ui_config": {
+                "type": "number",
+                "default": 2.0,
+                "min": 0.5,
+                "max": 10.0,
+                "description": "Base backoff delay in seconds between sub-researcher retry attempts"
+            }
+        }
+    )
     # Research Configuration
     search_api: SearchAPI = Field(
         default=SearchAPI.TAVILY,

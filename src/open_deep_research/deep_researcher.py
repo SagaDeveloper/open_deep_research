@@ -222,6 +222,40 @@ async def supervisor(state: SupervisorState, config: RunnableConfig) -> Command[
         }
     )
 
+async def _invoke_researcher_with_retry(tool_call: dict, config: RunnableConfig, configurable: Configuration) -> dict:
+    """Invoke a single researcher_subgraph run with bounded retry-with-backoff.
+
+    Transient errors (e.g. provider rate limiting) are retried up to
+    `configurable.research_retry_max_attempts` times with a linear backoff
+    delay between attempts. Token-limit-exceeded errors are not retried,
+    since retrying will not change the outcome.
+
+    Args:
+        tool_call: The ConductResearch tool call to execute
+        config: Runtime configuration passed through to the subgraph
+        configurable: Parsed Configuration instance
+
+    Returns:
+        The researcher_subgraph output, or a normalized error dict if all
+        attempts failed.
+    """
+    for attempt in range(1, configurable.research_retry_max_attempts + 1):
+        try:
+            return await researcher_subgraph.ainvoke({
+                "researcher_messages": [
+                    HumanMessage(content=tool_call["args"]["research_topic"])
+                ],
+                "research_topic": tool_call["args"]["research_topic"]
+            }, config)
+        except Exception as e:
+            if is_token_limit_exceeded(e, configurable.research_model) or attempt == configurable.research_retry_max_attempts:
+                return {
+                    "compressed_research": f"Error conducting this research topic after {attempt} attempt(s): {e}",
+                    "raw_notes": []
+                }
+            await asyncio.sleep(configurable.research_retry_base_delay_seconds * attempt)
+
+
 async def supervisor_tools(state: SupervisorState, config: RunnableConfig) -> Command[Literal["supervisor", "__end__"]]:
     """Execute tools called by the supervisor, including research delegation and strategic thinking.
     
@@ -286,60 +320,66 @@ async def supervisor_tools(state: SupervisorState, config: RunnableConfig) -> Co
     ]
     
     if conduct_research_calls:
-        try:
-            # Limit concurrent research units to prevent resource exhaustion
-            allowed_conduct_research_calls = conduct_research_calls[:configurable.max_concurrent_research_units]
-            overflow_conduct_research_calls = conduct_research_calls[configurable.max_concurrent_research_units:]
-            
-            # Execute research tasks in parallel
-            research_tasks = [
-                researcher_subgraph.ainvoke({
-                    "researcher_messages": [
-                        HumanMessage(content=tool_call["args"]["research_topic"])
-                    ],
-                    "research_topic": tool_call["args"]["research_topic"]
-                }, config) 
-                for tool_call in allowed_conduct_research_calls
-            ]
-            
-            tool_results = await asyncio.gather(*research_tasks)
-            
-            # Create tool messages with research results
-            for observation, tool_call in zip(tool_results, allowed_conduct_research_calls):
-                all_tool_messages.append(ToolMessage(
-                    content=observation.get("compressed_research", "Error synthesizing research report: Maximum retries exceeded"),
-                    name=tool_call["name"],
-                    tool_call_id=tool_call["id"]
-                ))
-            
-            # Handle overflow research calls with error messages
-            for overflow_call in overflow_conduct_research_calls:
-                all_tool_messages.append(ToolMessage(
-                    content=f"Error: Did not run this research as you have already exceeded the maximum number of concurrent research units. Please try again with {configurable.max_concurrent_research_units} or fewer research units.",
-                    name="ConductResearch",
-                    tool_call_id=overflow_call["id"]
-                ))
-            
-            # Aggregate raw notes from all research results
-            raw_notes_concat = "\n".join([
-                "\n".join(observation.get("raw_notes", [])) 
-                for observation in tool_results
-            ])
-            
-            if raw_notes_concat:
-                update_payload["raw_notes"] = [raw_notes_concat]
-                
-        except Exception as e:
-            # Handle research execution errors
-            if is_token_limit_exceeded(e, configurable.research_model) or True:
-                # Token limit exceeded or other error - end research phase
-                return Command(
-                    goto=END,
-                    update={
-                        "notes": get_notes_from_tool_calls(supervisor_messages),
-                        "research_brief": state.get("research_brief", "")
-                    }
-                )
+        # Limit concurrent research units to prevent resource exhaustion
+        allowed_conduct_research_calls = conduct_research_calls[:configurable.max_concurrent_research_units]
+        overflow_conduct_research_calls = conduct_research_calls[configurable.max_concurrent_research_units:]
+        
+        # Execute research tasks in parallel, isolating each sub-researcher's failures
+        # and retrying transient (non-token-limit) errors with bounded backoff
+        research_tasks = [
+            _invoke_researcher_with_retry(tool_call, config, configurable)
+            for tool_call in allowed_conduct_research_calls
+        ]
+        
+        tool_results = await asyncio.gather(*research_tasks, return_exceptions=True)
+        
+        # Normalize any exceptions that slipped through into error results so that
+        # one failing sub-researcher does not take down the entire batch
+        for i, result in enumerate(tool_results):
+            if isinstance(result, Exception):
+                tool_results[i] = {
+                    "compressed_research": f"Error conducting this research topic: {result}",
+                    "raw_notes": []
+                }
+        
+        # If every sub-researcher failed, end the research phase rather than
+        # looping the supervisor on an entirely empty batch of results
+        if tool_results and all(
+            "Error conducting this research topic" in result.get("compressed_research", "")
+            for result in tool_results
+        ):
+            return Command(
+                goto=END,
+                update={
+                    "notes": get_notes_from_tool_calls(supervisor_messages),
+                    "research_brief": state.get("research_brief", "")
+                }
+            )
+        
+        # Create tool messages with research results
+        for observation, tool_call in zip(tool_results, allowed_conduct_research_calls):
+            all_tool_messages.append(ToolMessage(
+                content=observation.get("compressed_research", "Error synthesizing research report: Maximum retries exceeded"),
+                name=tool_call["name"],
+                tool_call_id=tool_call["id"]
+            ))
+        
+        # Handle overflow research calls with error messages
+        for overflow_call in overflow_conduct_research_calls:
+            all_tool_messages.append(ToolMessage(
+                content=f"Error: Did not run this research as you have already exceeded the maximum number of concurrent research units. Please try again with {configurable.max_concurrent_research_units} or fewer research units.",
+                name="ConductResearch",
+                tool_call_id=overflow_call["id"]
+            ))
+        
+        # Aggregate raw notes from all research results
+        raw_notes_concat = "\n".join([
+            "\n".join(observation.get("raw_notes", [])) 
+            for observation in tool_results
+        ])
+        
+        if raw_notes_concat:
+            update_payload["raw_notes"] = [raw_notes_concat]
     
     # Step 3: Return command with all tool results
     update_payload["supervisor_messages"] = all_tool_messages
