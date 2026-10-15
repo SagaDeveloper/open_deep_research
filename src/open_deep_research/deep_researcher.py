@@ -532,7 +532,8 @@ async def compress_research(state: ResearcherState, config: RunnableConfig):
     })
     
     # Step 2: Prepare messages for compression
-    researcher_messages = state.get("researcher_messages", [])
+    # Work on a local copy so retry truncation never mutates the shared state list
+    researcher_messages = list(state.get("researcher_messages", []))
     
     # Add instruction to switch from research mode to compression mode
     researcher_messages.append(HumanMessage(content=compress_research_simple_human_message))
@@ -570,8 +571,9 @@ async def compress_research(state: ResearcherState, config: RunnableConfig):
                 researcher_messages = remove_up_to_last_ai_message(researcher_messages)
                 continue
             
-            # For other errors, continue retrying
-            continue
+            # For other (non-token-limit) errors, don't blindly retry identical
+            # requests - exit the loop and fall through to the error result.
+            break
     
     # Step 4: Return error result if all attempts failed
     raw_notes_content = "\n".join([
