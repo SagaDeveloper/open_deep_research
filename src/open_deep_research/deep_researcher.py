@@ -292,12 +292,14 @@ async def supervisor_tools(state: SupervisorState, config: RunnableConfig) -> Co
             overflow_conduct_research_calls = conduct_research_calls[configurable.max_concurrent_research_units:]
             
             # Execute research tasks in parallel
+            research_date = get_today_str()
             research_tasks = [
                 researcher_subgraph.ainvoke({
                     "researcher_messages": [
                         HumanMessage(content=tool_call["args"]["research_topic"])
                     ],
-                    "research_topic": tool_call["args"]["research_topic"]
+                    "research_topic": tool_call["args"]["research_topic"],
+                    "research_date": research_date
                 }, config) 
                 for tool_call in allowed_conduct_research_calls
             ]
@@ -399,7 +401,7 @@ async def researcher(state: ResearcherState, config: RunnableConfig) -> Command[
     # Prepare system prompt with MCP context if available
     researcher_prompt = research_system_prompt.format(
         mcp_prompt=configurable.mcp_prompt or "", 
-        date=get_today_str()
+        date=state.get("research_date") or get_today_str()
     )
     
     # Configure model with tools, retry logic, and settings
@@ -545,7 +547,7 @@ async def compress_research(state: ResearcherState, config: RunnableConfig):
     while synthesis_attempts < max_attempts:
         try:
             # Create system prompt focused on compression task
-            compression_prompt = compress_research_system_prompt.format(date=get_today_str())
+            compression_prompt = compress_research_system_prompt.format(date=state.get("research_date") or get_today_str())
             messages = [SystemMessage(content=compression_prompt)] + researcher_messages
             
             # Execute compression

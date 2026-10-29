@@ -4,8 +4,7 @@ import asyncio
 import logging
 import os
 import warnings
-from datetime import date, datetime, timedelta, timezone
-from functools import lru_cache
+from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any, Dict, List, Literal, Optional
 
 import aiohttp
@@ -870,25 +869,14 @@ def remove_up_to_last_ai_message(messages: list[MessageLikeRepresentation]) -> l
 # Misc Utils
 ##########################
 
-@lru_cache(maxsize=1)
-def _today_str_cached(cache_key: str) -> str:
-    """Compute the display date string for a given cache key (today's date).
-
-    Memoized so that repeated calls within the same calendar day return the
-    exact same string, preventing the researcher system prompt from changing
-    mid-trace if a research task straddles midnight.
-    """
-    now = datetime.now()
-    return f"{now:%a} {now:%b} {now.day}, {now:%Y}"
-
-
 def get_today_str() -> str:
     """Get current date formatted for display in prompts and outputs.
     
     Returns:
         Human-readable date string in format like 'Mon Jan 15, 2024'
     """
-    return _today_str_cached(date.today().isoformat())
+    now = datetime.now()
+    return f"{now:%a} {now:%b} {now.day}, {now:%Y}"
 
 def get_config_value(value):
     """Extract value from configuration, handling enums and None values."""

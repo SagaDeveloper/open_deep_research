@@ -86,6 +86,7 @@ class ResearcherState(TypedDict):
     researcher_messages: Annotated[list[MessageLikeRepresentation], operator.add]
     tool_call_iterations: int = 0
     research_topic: str
+    research_date: Optional[str]
     compressed_research: str
     raw_notes: Annotated[list[str], override_reducer] = []
 
